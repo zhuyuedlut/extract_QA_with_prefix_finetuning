@@ -5,13 +5,15 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers.utils import logging
 from transformers import BartConfig
 from transformers.activations import ACT2FN
-from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPastAndCrossAttentions
-from transformers.models.bart.modeling_bart import BartPretrainedModel, BartLearnedPositionalEmbedding, shift_tokens_right
+from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPastAndCrossAttentions, Seq2SeqModelOutput
+from transformers.models.bart.modeling_bart import BartPretrainedModel, BartLearnedPositionalEmbedding, \
+    shift_tokens_right
+from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
+
 
 # 将mask的向量扩展成mask矩阵
 def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
@@ -28,7 +30,12 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     return inverted_mask.masked_fill(inverted_mask.bool(), torch.finfo(dtype).min)
 
 
-def _make_causal_mask(input_ids_shape: torch.Size, dtype: torch.dtype, past_key_values_length: int = 0):
+def _make_causal_mask(
+    input_ids_shape: torch.Size,
+    dtype: torch.dtype,
+    past_key_values_length: int = 0,
+    prefix_embeds_length: int = 0,
+):
     """
     Make causal mask used for bi-directional self-attention.
     """
@@ -40,6 +47,9 @@ def _make_causal_mask(input_ids_shape: torch.Size, dtype: torch.dtype, past_key_
     # 将tgt_len * tgt_len的上半部分mask为decoder做准备
     mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
     mask = mask.to(dtype)
+    # 如果有prefix_embeds，则将prefix_embed_length的长度添加到mask的矩阵前
+    if prefix_embeds_length > 0:
+        mask = torch.cat([torch.zeros(tgt_len, prefix_embeds_length, dtype=dtype), mask], dim=-1)
     # 如果传递了past_key_values，则将past_key_values的长度添加到mask的矩阵前
     if past_key_values_length > 0:
         mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype), mask], dim=-1)
@@ -49,12 +59,12 @@ def _make_causal_mask(input_ids_shape: torch.Size, dtype: torch.dtype, past_key_
 
 class Attention(nn.Module):
     def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        dropout: float = 0.0,
-        is_decoder: bool = False,
-        bias=True,
+            self,
+            embed_dim: int,
+            num_heads: int,
+            dropout: float = 0.0,
+            is_decoder: bool = False,
+            bias=True,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -110,17 +120,21 @@ class Attention(nn.Module):
         return k, v, new_key_padding_mask
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        key_value_states: Optional[torch.Tensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        layer_head_mask: Optional[torch.Tensor] = None,
-        output_attentions: bool = False
+            self,
+            hidden_states: torch.Tensor,
+            prefix_states: Optional[torch.Tensor] = None,
+            key_value_states: Optional[torch.Tensor] = None,
+            past_key_value: Optional[Tuple[torch.Tensor]] = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            layer_head_mask: Optional[torch.Tensor] = None,
+            output_attentions: bool = False
     ):
 
         is_cross_attention = key_value_states is not None
         bsz, tgt_len, embed_dim = hidden_states.size()
+        if prefix_states is not None:
+            _, prefix_len, _ = prefix_states.size()
+            tgt_len += prefix_len
 
         # get query proj
         query_states = self.q_proj(hidden_states) * self.scaling
@@ -141,8 +155,13 @@ class Attention(nn.Module):
             value_states = torch.cat([past_key_value[1], value_states], dim=2)
         else:
             # self_attention
-            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
-            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
+            if prefix_states is not None:
+                key_states = torch.cat([prefix_states['prefix_key'], key_states], dim=1)
+                value_states = torch.cat([prefix_states['prefix_value'], value_states], dim=1)
+            key_states = self._shape(key_states, -1, bsz)
+            value_states = self._shape(value_states, -1, bsz)
 
         if self.is_decoder:
             # if cross_attention save Tuple(torch.Tensor, torch.Tensor) of all cross attention key/value_states.
@@ -237,14 +256,16 @@ class EncoderLayer(nn.Module):
         self.use_prefix = config.use_prefix
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: torch.Tensor,
-        layer_head_mask: torch.Tensor,
-        output_attentions: bool = False
+            self,
+            prefix_states: Optional[torch.Tensor],
+            hidden_states: torch.Tensor,
+            attention_mask: torch.Tensor,
+            layer_head_mask: torch.Tensor,
+            output_attentions: bool = False
     ):
         residual = hidden_states
         hidden_states, attn_weights, _ = self.self_attn(
+            prefix_states=prefix_states,
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             layer_head_mask=layer_head_mask,
@@ -264,7 +285,7 @@ class EncoderLayer(nn.Module):
 
         # change the inf value or nan in tensor to normal num
         if hidden_states.dtype == torch.float16 and (
-            torch.isinf(hidden_states).any() or torch.isnan(hidden_states).any()
+                torch.isinf(hidden_states).any() or torch.isnan(hidden_states).any()
         ):
             clamp_value = torch.finfo(hidden_states.dtype).max - 1000
             hidden_states = torch.clamp(hidden_states, min=-clamp_value, max=clamp_value)
@@ -306,15 +327,15 @@ class BartEncoder(BartPretrainedModel):
         self.gradient_checkpointing = False
 
     def forward(
-        self,
-        input_ids,
-        attention_mask=None,
-        head_mask=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
+            self,
+            input_ids,
+            attention_mask=None,
+            head_mask=None,
+            prefix_embeds=None,
+            inputs_embeds=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None,
     ):
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -378,8 +399,9 @@ class BartEncoder(BartPretrainedModel):
                     )
                 else:
                     layer_outputs = encoder_layer(
-                        hidden_states,
-                        attention_mask,
+                        hidden_states=hidden_states,
+                        prefix_states=prefix_embeds[idx] if prefix_embeds is not None else None,
+                        attention_mask=attention_mask,
                         layer_head_mask=(head_mask[idx] if head_mask is not None else None),
                         output_attentions=output_attentions
                     )
@@ -409,9 +431,6 @@ class DecoderLayer(nn.Module):
             embed_dim=self.embed_dim,
             num_heads=config.decoder_attention_heads,
             dropout=config.attention_dropout,
-            cache_key='self',
-            use_prefix=config.use_prefix,
-            prefix_len=config.prefix_len
         )
         self.dropout = config.dropout
         self.activation_fn = ACT2FN[config.activation_function]
@@ -422,10 +441,6 @@ class DecoderLayer(nn.Module):
             self.embed_dim,
             config.decoder_attention_heads,
             dropout=config.attention_dropout,
-            cache_key='encoder_decoder',
-            encoder_decoder_attention=True,
-            use_prefix=config.use_prefix,
-            prefix_len=config.prefix_len
         )
 
         self.encoder_attn_layer_norm = nn.LayerNorm(self.embed_dim)
@@ -434,16 +449,16 @@ class DecoderLayer(nn.Module):
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        encoder_hidden_states: Optional[torch.Tensor] = None,
-        encoder_attention_mask: Optional[torch.Tensor] = None,
-        layer_head_mask: Optional[torch.Tensor] = None,
-        cross_attn_layer_head_mask: Optional[torch.Tensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = True,
+            self,
+            hidden_states: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            encoder_hidden_states: Optional[torch.Tensor] = None,
+            encoder_attention_mask: Optional[torch.Tensor] = None,
+            layer_head_mask: Optional[torch.Tensor] = None,
+            cross_attn_layer_head_mask: Optional[torch.Tensor] = None,
+            past_key_value: Optional[Tuple[torch.Tensor]] = None,
+            output_attentions: Optional[bool] = False,
+            use_cache: Optional[bool] = True,
     ):
         residual = hidden_states
         self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
@@ -528,7 +543,14 @@ class BartDecoder(BartPretrainedModel):
     def set_input_embeddings(self, value: nn.Module):
         self.embed_tokens = value
 
-    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+    def _prepare_decoder_attention_mask(
+            self,
+            attention_mask,
+            input_shape,
+            inputs_embeds,
+            past_key_values_length,
+            prefix_embeds_length
+    ):
         # create causal mask
         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
         combined_attention_mask = None
@@ -536,7 +558,10 @@ class BartDecoder(BartPretrainedModel):
         # 这里相当于是计算出针对于decoder输入计算出decoder的mask的上三角矩阵
         if input_shape[-1] > 1:
             combined_attention_mask = _make_causal_mask(
-                input_shape, inputs_embeds.dtype, past_key_values_length=past_key_values_length
+                input_shape,
+                inputs_embeds.dtype,
+                past_key_values_length=past_key_values_length,
+                prefix_embeds_length=prefix_embeds_length
             ).to(self.device)
         # 传入attention_mask相当于在训练的时候decoder的时候mask掉句子中的一些单词，然后还原整个句子
         if attention_mask is not None:
@@ -550,48 +575,53 @@ class BartDecoder(BartPretrainedModel):
         return combined_attention_mask
 
     def forward(
-        self,
-        input_ids=None,
-        attention_mask=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        head_mask=None,
-        cross_attn_head_mask=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        use_cache=False,
-        use_prefix=False,
-        output_attentions=False,
-        output_hidden_states=False,
-        return_dict=False,
+            self,
+            input_ids=None,
+            attention_mask=None,
+            prefix_hidden_states=None,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            head_mask=None,
+            cross_attn_head_mask=None,
+            past_key_values=None,
+            prefix_embeds=None,
+            inputs_embeds=None,
+            use_cache=False,
+            use_prefix=False,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=False,
     ):
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_attentions = output_attentions if output_attentions is not None \
+            else self.config.output_attentions
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+            output_hidden_states if output_hidden_states is not None
+            else self.config.output_hidden_states
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
+            raise ValueError("You cannot specify both decoder_input_ids and "
+                             "decoder_inputs_embeds at the same time")
         elif input_ids is not None:
             input_shape = input_ids.size()
             input_ids = input_ids.view(-1, input_shape[-1])
         elif inputs_embeds is not None:
             input_shape = inputs_embeds.size()[:-1]
         else:
-            raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
+            raise ValueError("You have to specify either decoder_input_ids "
+                             "or decoder_inputs_embeds")
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
 
-        if not use_prefix:
-            # when use prefix, the past_key_values is Object
-            # past_key_values shape is (batch_size, num_heads, sequence_length, embed_size_per_head)
-            past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+
+        prefix_embeds_length = prefix_embeds.shape[1] if prefix_embeds is not None else 0
 
         attention_mask = self._prepare_decoder_attention_mask(
-            attention_mask, input_shape, inputs_embeds, past_key_values_length
+            attention_mask, input_shape, inputs_embeds, past_key_values_length, prefix_embeds_length
         )
 
         if encoder_hidden_states is not None and encoder_attention_mask is not None:
@@ -617,7 +647,7 @@ class BartDecoder(BartPretrainedModel):
 
         for idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
-                all_hidden_states += (hidden_states, )
+                all_hidden_states += (hidden_states,)
             dropout_probability = random.uniform(0, 1)
             if self.training and (dropout_probability < self.layerdrop):
                 continue
@@ -731,6 +761,7 @@ class BartModel(BartPretrainedModel):
             cross_attn_head_mask=None,
             encoder_outputs=None,
             past_key_values=None,
+            prefix_embeds=None,
             inputs_embeds=None,
             decoder_inputs_embeds=None,
             use_cache: Optional[bool] = None,
@@ -740,7 +771,8 @@ class BartModel(BartPretrainedModel):
             return_dict: Optional[bool] = None,
     ):
         if decoder_input_ids is None and decoder_inputs_embeds is None:
-            decoder_input_ids = shift_tokens_right(input_ids, self.config.pad_token_id, self.config.decoder_start_token_id)
+            decoder_input_ids = shift_tokens_right(input_ids, self.config.pad_token_id,
+                                                   self.config.decoder_start_token_id)
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -754,6 +786,7 @@ class BartModel(BartPretrainedModel):
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 head_mask=head_mask,
+                prefix_embeds=prefix_embeds['encoder'] if use_prefix is not None else None,
                 inputs_embeds=inputs_embeds,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
@@ -769,14 +802,31 @@ class BartModel(BartPretrainedModel):
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
+            prefix_encoder_hidden_states=prefix_embeds['encoder_decoder'] if use_prefix is not None else None,
             encoder_hidden_states=encoder_outputs[0],
             encoder_attention_mask=attention_mask,
             head_mask=decoder_head_mask,
             cross_attn_head_mask=cross_attn_head_mask,
             past_key_values=past_key_values,
+            prefix_embeds=prefix_embeds['decoder'] if use_prefix is not None else None,
             inputs_embeds=decoder_inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict
         )
+
+        if not return_dict:
+            return decoder_outputs + encoder_outputs
+
+        return Seq2SeqModelOutput(
+            last_hidden_state=decoder_outputs.last_hidden_state,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
+        )
+
