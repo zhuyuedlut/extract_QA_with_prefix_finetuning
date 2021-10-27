@@ -1,8 +1,8 @@
 import logging
-from argparse import ArgumentParser
 
 import pytorch_lightning as pl
-from transformers import AutoConfig, AutoTokenizer
+import torch.optim
+from transformers import AutoConfig, AutoTokenizer, BartForQuestionAnswering
 
 from src.models.prefix_modeling_bart import BartModel
 from src.models.prefix_tuning import PrefixTuning
@@ -11,12 +11,11 @@ from src.utils import freeze_params
 logger = logging.getLogger(__name__)
 
 
-class BartForQuestionAnswering(pl.LightningModule):
-    def __init__(self,
-                 model_name_or_path,
-                 cache_dir,
-                 ):
+class PrefixBartQAModel(pl.LightningModule):
+    def __init__(self, model_name_or_path, cache_dir, learning_rate):
         super().__init__()
+
+        self.learning_rate = learning_rate
 
         self.config = AutoConfig.from_pretrained(
             model_name_or_path=model_name_or_path,
@@ -41,8 +40,6 @@ class BartForQuestionAnswering(pl.LightningModule):
     def forward(self, **inputs):
         pad_token_id = self.tokenizer.pad_token_id
 
-
-
     def training_step(self, batch, batch_idx):
         outputs = self(**batch)
         loss = outputs[0]
@@ -52,9 +49,31 @@ class BartForQuestionAnswering(pl.LightningModule):
     #
     # def test_step(self, *args, **kwargs) -> Optional[STEP_OUTPUT]:
 
-    @staticmethod
-    def add_model_specific_args(parent_parse):
-        parser = ArgumentParser(parents=[parent_parse])
-        parser.add_argument("--pre_len", default=200, type=int, help="The prefix embedding length")
 
-        return parser
+class BartQAModel(pl.LightningModule):
+    def __init__(self, model_name_or_path, cache_dir):
+        super(BartQAModel, self).__init__()
+        self.model = BartForQuestionAnswering.from_pretrained(model_name_or_path, cache_dir=cache_dir)
+
+    def forward(self, x):
+        return self.model(**x)
+
+    def training_step(self, batch, batch_idx):
+        outputs = self(batch)
+        loss = outputs[0]
+        return { 'loss': loss, 'log': { 'train_loss': loss }}
+
+    def validation_step(self, batch):
+        outputs = self(batch)
+        loss = outputs[0]
+        return {'loss': loss, 'log': {'val_loss': loss}}
+
+    def test_step(self, batch):
+        outputs = self(batch)
+        loss = outputs[0]
+        return { 'loss': loss, 'log': {'test_loss': loss}}
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+
+
