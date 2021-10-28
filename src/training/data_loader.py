@@ -3,7 +3,6 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import BertTokenizer
 
-
 class DataModule(pl.LightningDataModule):
     def __init__(self,
                  model_name_or_path,
@@ -18,12 +17,13 @@ class DataModule(pl.LightningDataModule):
         self.train_batch_size = train_batch_size
         self.eval_batch_size = eval_batch_size
 
-        self.tokenizer = BertTokenizer.from_pretrained(self.model_name_or_path, use_fast=True)
+        self.tokenizer = BertTokenizer.from_pretrained(self.model_name_or_path,
+                                                       use_fast=True)
+
+    def prepare_data(self) -> None:
+        self.dataset = load_dataset(self.dataset_name_or_path)
 
     def setup(self):
-        # reference https://huggingface.co/transformers/preprocessing.html
-        # reference https://huggingface.co/docs/datasets/share.html
-        self.dataset = load_dataset(self.dataset_name_or_path)
 
         for split in self.dataset.keys():
             self.dataset[split] = self.dataset[split].map(
@@ -34,38 +34,44 @@ class DataModule(pl.LightningDataModule):
             )
 
     def train_dataloader(self):
-        return DataLoader(self.dataset['train'], batch_size=self.train_batch_size, shuffle=True)
+        return DataLoader(self.dataset['train'],
+                          batch_size=self.train_batch_size, shuffle=True)
 
     def val_dataloader(self):
-        return DataLoader(self.dataset['validation'], batch_size=self.eval_batch_size)
+        return DataLoader(self.dataset['validation'],
+                          batch_size=self.eval_batch_size)
 
     def test_dataloader(self):
         return DataLoader(self.dataset['test'], batch_size=self.eval_batch_size)
 
     def convert_to_feature(self, examples):
-        features = self.tokenizer(examples['question'], examples['context'], padding='longest')
+        features = self.tokenizer(examples['question'], examples['context'],
+                                  padding='longest')
         start_positions, end_positions = [], []
 
-        for i, (context, answer) in enumerate(zip(examples['context'], examples['answers'])):
+        for i, (context, answer) in enumerate(
+                zip(examples['context'], examples['answers'])):
             start_idx, end_idx = self.get_correct_alignment(context, answer)
             start_positions.append(start_idx)
             end_positions.append(end_idx)
 
-        features.update({'start_positions': start_positions, 'enc_positions': end_positions })
+        features.update({'start_positions': start_positions,
+                         'enc_positions': end_positions})
         return features
 
     @staticmethod
     def get_correct_alignment(context, answer):
         target_text = answer['text'][0]
         start_idx = answer['answer_start'][0]
-        while context[start_idx] == ' ' or context[start_idx] == '\t' or context[start_idx] == '\r' or context[start_idx] == '\n':
+        while context[start_idx] == ' ' or context[start_idx] == '\t' or \
+                context[start_idx] == '\r' or context[start_idx] == '\n':
             start_idx += 1
         end_idx = start_idx + len(target_text)
         if context[start_idx: end_idx] == target_text:
             return start_idx, end_idx
-        elif context[start_idx-1: end_idx-1] == target_text:
-            return start_idx-1, end_idx-1
-        elif context[start_idx-2: end_idx-2] == target_text:
-            return start_idx-2, end_idx-2
+        elif context[start_idx - 1: end_idx - 1] == target_text:
+            return start_idx - 1, end_idx - 1
+        elif context[start_idx - 2: end_idx - 2] == target_text:
+            return start_idx - 2, end_idx - 2
         else:
             raise ValueError()
