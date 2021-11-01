@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 
-from transformers import PretrainedBartModel, BartConfig
+from transformers import BartPretrainedModel, BartConfig
 
 
-class PrefixTuning(PretrainedBartModel):
+class PrefixTuning(BartPretrainedModel):
     def __init__(self, config: BartConfig):
         super(PrefixTuning, self).__init__(config)
         self.preseqlen = config.preseqlen

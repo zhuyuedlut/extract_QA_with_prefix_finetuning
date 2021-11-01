@@ -9,13 +9,13 @@ def generate_trainer(args: argparse.Namespace):
     checkpoint_callback = ModelCheckpoint(
         dirpath=args.model_dir,
         filename='{epoch}-{val_loss:.2f}',
-        monitor='val_loss',
+        monitor='f1',
         save_top_k=1,
-        mode='min',
+        mode='max',
     )
     early_stop_callback = EarlyStopping(
-        monitor='val_loss',
-        mode='min',
+        monitor='f1',
+        mode='max',
         patience=6,
     )
     callbacks = [checkpoint_callback, early_stop_callback]
@@ -24,9 +24,7 @@ def generate_trainer(args: argparse.Namespace):
 
     trainer = Trainer(
         args,
-        gpus=1,
         callbacks=callbacks,
-        enable_checkpointing=True,
         log_every_n_steps=20,
         logger=logger,
     )

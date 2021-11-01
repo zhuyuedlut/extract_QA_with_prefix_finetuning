@@ -1,7 +1,19 @@
 import re
-
 import nltk
 
+# find longest common string
+def find_lcs(s1, s2):
+    m = [[0 for i in range(len(s2) + 1)] for j in range(len(s1) + 1)]
+    mmax = 0
+    p = 0
+    for i in range(len(s1)):
+        for j in range(len(s2)):
+            if s1[i] == s2[j]:
+                m[i + 1][j + 1] = m[i][j] + 1
+                if m[i + 1][j + 1] > mmax:
+                    mmax = m[i + 1][j + 1]
+                    p = i + 1
+    return s1[p - mmax:p], mmax
 
 def mixed_segmentation(in_str, rm_punc=False):
     in_str = str(in_str).lower().strip()
@@ -29,7 +41,6 @@ def mixed_segmentation(in_str, rm_punc=False):
 
     return segs_out
 
-
 def remove_punctuation(in_str):
     in_str = str(in_str).lower().strip()
     sp_char = ['-', ':', '_', '*', '^', '/', '\\', '~', '`', '+', '=',
@@ -42,21 +53,6 @@ def remove_punctuation(in_str):
         else:
             out_segs.append(char)
     return ''.join(out_segs)
-
-
-def find_lcs(s1, s2):
-    m = [[0 for i in range(len(s2) + 1)] for j in range(len(s1) + 1)]
-    mmax = 0
-    p = 0
-    for i in range(len(s1)):
-        for j in range(len(s2)):
-            if s1[i] == s2[j]:
-                m[i + 1][j + 1] = m[i][j] + 1
-                if m[i + 1][j + 1] > mmax:
-                    mmax = m[i + 1][j + 1]
-                    p = i + 1
-    return s1[p - mmax:p], mmax
-
 
 def calc_f1_score(answers, prediction):
     f1_scores = []
@@ -73,7 +69,6 @@ def calc_f1_score(answers, prediction):
         f1_scores.append(f1)
     return max(f1_scores)
 
-
 def calc_em_score(answers, prediction):
     em = 0
     for ans in answers:
@@ -83,7 +78,6 @@ def calc_em_score(answers, prediction):
             em = 1
             break
     return em
-
 
 def evaluate(ground_truth_file, prediction_file):
     f1 = 0

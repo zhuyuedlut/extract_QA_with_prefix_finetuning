@@ -11,7 +11,7 @@ def main(args):
     pl.seed_everything(args.seed)
 
     data_module = DataModule(**vars(args))
-    model = MODEL_CLASSES[args.model_type][0](**vars(args))
+    model = MODEL_CLASSES[args.model_type][1](**vars(args))
 
     trainer = generate_trainer(args)
 
@@ -22,7 +22,7 @@ def main(args):
         trainer.test(model, data_module)
 
 
-if __name__ == 'main':
+if __name__ == '__main__':
     parser = ArgumentParser()
 
     parser.add_argument("--model_dir", default=None, required=True, type=str, help="Path to save, load models")
@@ -36,12 +36,13 @@ if __name__ == 'main':
     parser.add_argument("--train_batch_size", default=256, type=int, help="Batch size for training")
     parser.add_argument("--eval_batch_size", default=128, type=int, help="Batch size for test and val")
     parser.add_argument("--learning_rate", default=5e-5, help="The initial learning rate for Adam")
-    parser.add_argument("--max_epochs", default=10.0, type=float,
-                        help="Total number of trainning epochs to perform")
     parser.add_argument("--pre_len", default=200, type=int, help="The prefix embedding length")
 
-    parser.add_argument("--model_name_and_path", default=None, type=str, help="path to the pretrained")
-    parser.add_argument("--dataset_name_or_path", default="cmrc2018", type=str)
+    parser.add_argument("--model_name_or_path", default=None, type=str, help="path to the pretrained")
+
+    parser.add_argument("--train_file", default=None, type=str)
+    parser.add_argument("--val_file", default=None, type=str)
+    parser.add_argument("--test_file", default=None, type=str)
 
     parser.add_argument("--do_train", action="store_true", help="Whether to run training")
     parser.add_argument("--do_test", action="store_true", help="Whether to run testing")
