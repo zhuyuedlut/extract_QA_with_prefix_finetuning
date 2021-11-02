@@ -10,8 +10,8 @@ from src.training.trainer import generate_trainer
 def main(args):
     pl.seed_everything(args.seed)
 
-    data_module = DataModule(**vars(args))
-    model = MODEL_CLASSES[args.model_type][1](**vars(args))
+    data_module = DataModule(args)
+    model = MODEL_CLASSES[args.model_type][1](args)
 
     trainer = generate_trainer(args)
 
@@ -26,6 +26,7 @@ if __name__ == '__main__':
     parser = ArgumentParser()
 
     parser.add_argument("--model_dir", default=None, required=True, type=str, help="Path to save, load models")
+    parser.add_argument("--data_dir", default=None, required=True, type=str, help="The input data dir")
 
     parser.add_argument("--cache_dir", default='./', type=str,
                         help="Path to directory in which a downloaded pretrained model and dataset")
@@ -39,10 +40,6 @@ if __name__ == '__main__':
     parser.add_argument("--pre_len", default=200, type=int, help="The prefix embedding length")
 
     parser.add_argument("--model_name_or_path", default=None, type=str, help="path to the pretrained")
-
-    parser.add_argument("--train_file", default=None, type=str)
-    parser.add_argument("--val_file", default=None, type=str)
-    parser.add_argument("--test_file", default=None, type=str)
 
     parser.add_argument("--do_train", action="store_true", help="Whether to run training")
     parser.add_argument("--do_test", action="store_true", help="Whether to run testing")

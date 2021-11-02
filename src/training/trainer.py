@@ -2,7 +2,6 @@ import argparse
 
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
-from pytorch_lightning import loggers as pl_loggers
 
 
 def generate_trainer(args: argparse.Namespace):
@@ -20,13 +19,6 @@ def generate_trainer(args: argparse.Namespace):
     )
     callbacks = [checkpoint_callback, early_stop_callback]
 
-    logger = pl_loggers.TensorBoardLogger("logs/")
-
-    trainer = Trainer(
-        args,
-        callbacks=callbacks,
-        log_every_n_steps=20,
-        logger=logger,
-    )
+    trainer = Trainer(callbacks=callbacks, log_every_n_steps=20)
 
     return trainer

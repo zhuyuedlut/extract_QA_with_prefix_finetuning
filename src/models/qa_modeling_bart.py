@@ -6,8 +6,6 @@ import pytorch_lightning as pl
 import torch.optim
 from tqdm import tqdm
 from transformers import AutoConfig, AutoTokenizer, BartForQuestionAnswering
-
-from src.data_proccess.post_proccess import generate_predictions
 from src.metric import evaluate
 from src.models.prefix_modeling_bart import BartModel
 from src.models.prefix_tuning import PrefixTuning
@@ -58,9 +56,10 @@ class PrefixBartQAModel(pl.LightningModule):
 
 
 class BartQAModel(pl.LightningModule):
-    def __init__(self, model_name_or_path, **kwargs):
+    def __init__(self, args):
         super(BartQAModel, self).__init__()
-        self.model = BartForQuestionAnswering.from_pretrained(model_name_or_path)
+        self.model = BartForQuestionAnswering.from_pretrained(args.model_name_or_path)
+        self.learning_rate = args.learning_rate
 
     def forward(self, x):
         input_ids, attention_mask, start_positions, end_positions = x
@@ -73,17 +72,17 @@ class BartQAModel(pl.LightningModule):
         )
 
     def training_step(self, batch, batch_idx):
-        input_ids, input_mask, segment_ids, start_positions, end_positions = batch
+        input_ids, input_mask, start_positions, end_positions, example_indices = batch
 
         outputs = self((input_ids, input_mask, start_positions, end_positions))
         loss = outputs[0]
 
         return {'loss': loss}
 
-    def validation_step(self, batch):
-        input_ids, input_mask, segment_ids, start_positions, end_positions, example_indices = batch
+    def validation_step(self, batch, batch_idx):
+        input_ids, input_mask, start_positions, end_positions, example_indices = batch
 
-        outputs = self((input_ids, input_mask, start_positions, end_positions))
+        outputs = self((input_ids, input_mask, None, None))
 
         loss, start_logits, end_logits = outputs[:3]
 
@@ -111,25 +110,25 @@ class BartQAModel(pl.LightningModule):
                                              start_logits=start_logits,
                                              end_logits=end_logits))
 
-        predictions = generate_predictions(
-            self.trainer.datamodule.val_examples,
-            self.trainer.datamodule.val_features,
-            all_results,
-            n_best_size=20,
-            max_answer_length=512,
-            do_lower_case=True
-        )
+        # predictions = generate_predictions(
+        #     self.trainer.datamodule.val_examples,
+        #     self.trainer.datamodule.val_features,
+        #     all_results,
+        #     n_best_size=20,
+        #     max_answer_length=512,
+        #     do_lower_case=True
+        # )
 
-        temp_result = self.get_eval(self.trainer.datamodule.val_file, predictions)
-        print("f1 score", temp_result['F1'])
-        print("EM", temp_result["EM"])
-
-        self.log("f1", temp_result['F1'], prog_bar=True)
+        # temp_result = self.get_eval(self.trainer.datamodule.val_file, predictions)
+        # print("f1 score", temp_result['F1'])
+        # print("EM", temp_result["EM"])
+        #
+        # self.log("f1", temp_result['F1'], prog_bar=True)
 
     def test_step(self, batch):
-        input_ids, input_mask, segment_ids, start_positions, end_positions = batch
+        input_ids, input_mask, start_positions, end_positions, example_indices = batch
 
-        outputs = self((input_ids, input_mask, start_positions, end_positions))
+        outputs = self((input_ids, input_mask, None, None))
         return outputs
 
     def configure_optimizers(self):
@@ -147,3 +146,13 @@ class BartQAModel(pl.LightningModule):
         output_result['SKIP'] = SKIP
 
         return output_result
+
+    def generate_predictions(self, all_examples, all_features, all_results, n_best_size, max_answer_length):
+        example_index_to_feature = collections.defaultdict(list)
+        for feature in all_features:
+            example_index_to_feature[feature.example_index].append(feature)
+
+        unique_id_to_result = {}
+        for result in all_results:
+            unique_id_to_result[result.unique_id] = result
+
