@@ -1,15 +1,12 @@
 import collections
 import json
 import os
-from tqdm import tqdm
 
 import pytorch_lightning as pl
 import torch
-
-from transformers import BertTokenizer, AutoConfig
 from torch.utils.data import DataLoader, TensorDataset
-
-from src.utils import check_is_max_context
+from tqdm import tqdm
+from transformers import BertTokenizer, AutoConfig
 
 
 class DataModule(pl.LightningDataModule):
@@ -20,6 +17,9 @@ class DataModule(pl.LightningDataModule):
         self.model_name_or_path = args.model_name_or_path
 
         self.data_dir = args.data_dir
+
+        self.max_question_length = args.max_question_length
+        self.doc_stride = args.doc_stride
 
         self.train_batch_size = args.train_batch_size
         self.eval_batch_size = args.eval_batch_size
@@ -46,6 +46,26 @@ class DataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(self.test_dataset, batch_size=self.eval_batch_size)
+
+    # cur_span_index是当前在doc_spans中的index
+    @staticmethod
+    def check_is_max_context(doc_spans, cur_span_index, position):
+        best_score = None
+        best_span_index = None
+        for (span_index, doc_span) in enumerate(doc_spans):
+            end = doc_span.start + doc_span.length - 1
+            if position < doc_span.start:
+                continue
+            if position > end:
+                continue
+            num_left_context = position - doc_span.start
+            num_right_context = end - position
+            score = min(num_left_context, num_right_context) + 0.01 * doc_span.length
+            if best_score is None or score > best_score:
+                best_score = score
+                best_span_index = span_index
+
+        return cur_span_index == best_span_index
 
     def generate_examples(self, mode):
         data_file = os.path.join(self.data_dir, "{}.json".format(mode))
@@ -88,9 +108,13 @@ class DataModule(pl.LightningDataModule):
                         'start_position': start_position,
                         'end_position': end_position
                     })
+
+        print('mis_match:', mis_match)
+        print('example nums:', len(examples))
+
         return examples
 
-    def generate_features(self, examples, mode, max_question_length, doc_stride):
+    def generate_features(self, examples, mode):
         unique_id = 1000000000
         cache_features_file = os.path.join(self.data_dir, 'cached_{}'.format(mode))
 
@@ -98,18 +122,12 @@ class DataModule(pl.LightningDataModule):
             features = torch.load(cache_features_file)
         else:
             features = []
-            for (example_index, example) in enumerate(examples):
+            for (example_index, example) in enumerate(tqdm(examples)):
                 query_tokens = self.tokenizer.tokenize(example['question'])
 
-                if len(query_tokens) > max_question_length:
-                    query_tokens = query_tokens[0:max_question_length]
+                if len(query_tokens) > self.max_question_length:
+                    query_tokens = query_tokens[0:self.max_question_length]
 
-                # 通过index来访问token
-                token_to_original_index = []
-                original_to_token_index = []
-                for (i, token) in enumerate(example['doc_tokens']):
-                    original_to_token_index.append(i)
-                    token_to_original_index.append(token)
 
                 # context可以使用的最大的长度
                 max_tokens_for_context = self.config.max_position_embeddings - len(query_tokens) - 3
@@ -127,7 +145,7 @@ class DataModule(pl.LightningDataModule):
                     doc_spans.append(_Docspan(start=start_offset, length=length))
                     if start_offset + length == len(example['doc_tokens']):
                         break
-                    start_offset += min(length, doc_stride)
+                    start_offset += min(length, self.doc_stride)
 
                 for (doc_span_index, doc_span) in enumerate(doc_spans):
                     tokens = []
@@ -149,8 +167,11 @@ class DataModule(pl.LightningDataModule):
                     # 从start到doc_span.length依次遍历
                     for i in range(doc_span.length):
                         split_token_index = doc_span.start + i
-                        token_to_original_map[len(tokens)] = example['doc_tokens'][split_token_index]
-                        is_max_context = check_is_max_context(doc_spans, doc_span_index, split_token_index)
+                        # token_to_original记录了context开始的token在doc_tokens中的idx和在input_ids中对应的idx的一个map
+                        # 这个map是为了之后生成最终的抽取答案
+                        # 因为输入的start_position和end_position都是相对于input_ids的idx
+                        token_to_original_map[len(tokens)] = split_token_index
+                        is_max_context = self.check_is_max_context(doc_spans, doc_span_index, split_token_index)
                         token_is_max_context[len(tokens)] = is_max_context
                         tokens.append(example['doc_tokens'][split_token_index])
                         segment_ids.append(1)
@@ -163,7 +184,7 @@ class DataModule(pl.LightningDataModule):
                     input_ids = self.tokenizer.convert_tokens_to_ids(tokens)
                     input_mask = [1] * len(input_ids)
 
-                    while len(input_ids) < max_question_length:
+                    while len(input_ids) < self.config.max_position_embeddings:
                         input_ids.append(0)
                         input_mask.append(0)
                         segment_ids.append(0)
@@ -186,14 +207,27 @@ class DataModule(pl.LightningDataModule):
                             start_position = example['start_position'] - doc_start + doc_offset
                             end_position = example['end_position'] - doc_start + doc_offset
 
-                        feature = {
-
+                    feature = {
+                        "unique_id": unique_id,
+                        "example_index": example_index,
+                        "doc_span_index": doc_span_index,
+                        "tokens": tokens,
+                        "token_to_orig_map": token_to_original_map,
+                        "token_is_max_context": token_is_max_context,
+                        "input_ids": input_ids,
+                        "input_mask": input_mask,
+                        "segment_ids": segment_ids,
+                        "input_span_mask": input_span_mask,
+                        "start_position": start_position,
+                        "end_position": end_position,
                         }
-                features.append(feature)
-                unique_id += 1
+                    features.append(feature)
+                    unique_id += 1
+
+            torch.save(features, cache_features_file)
 
         all_input_ids = torch.tensor([f['input_ids'] for f in features], dtype=torch.long)
-        all_input_mask = torch.tensor([f['attention_mask'] for f in features], dtype=torch.long)
+        all_input_mask = torch.tensor([f['input_mask'] for f in features], dtype=torch.long)
         all_example_index = torch.tensor([f['example_index'] for f in features], dtype=torch.int)
 
         seq_len = all_input_ids.shape[1]
