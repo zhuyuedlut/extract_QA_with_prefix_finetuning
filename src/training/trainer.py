@@ -7,7 +7,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 def generate_trainer(args: argparse.Namespace):
     checkpoint_callback = ModelCheckpoint(
         dirpath=args.output_dir,
-        filename='{epoch}-{val_loss:.2f}',
+        filename='{epoch}-{f1:.2f}',
         monitor='f1',
         save_top_k=1,
         mode='max',
@@ -19,6 +19,6 @@ def generate_trainer(args: argparse.Namespace):
     )
     callbacks = [checkpoint_callback, early_stop_callback]
 
-    trainer = Trainer(gpus=1, callbacks=callbacks, log_every_n_steps=20)
+    trainer = Trainer(gpus=1, callbacks=callbacks, log_every_n_steps=2, accumulate_grad_batches=2)
 
     return trainer

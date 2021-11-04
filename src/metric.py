@@ -158,7 +158,7 @@ class Metric:
 
             assert len(nbest_json) >= 1
 
-            all_predictions[example["qid"]] = best_non_null_entry.text
+            all_predictions[example["qid"]] = nbest_json[0]["text"]
             all_nbest_json[example["qid"]] = nbest_json
 
         return all_predictions
@@ -209,9 +209,6 @@ class Metric:
         for ans in answers:
             ans_ = self.remove_punctuation(ans)
             prediction_ = self.remove_punctuation(prediction)
-            print('answers:', ans_)
-            print("prediction:", prediction_)
-            print("******************************************************")
             if ans_ == prediction_:
                 em = 1
                 break
@@ -223,8 +220,6 @@ class Metric:
         total_count = 0
         skip_count = 0
         for instance in ground_truth_file["data"]:
-            # context_id   = instance['context_id'].strip()
-            # context_text = instance['context_text'].strip()
             for para in instance["paragraphs"]:
                 for qas in para['qas']:
                     total_count += 1
@@ -233,14 +228,13 @@ class Metric:
                     answers = [x["text"] for x in qas['answers']]
 
                     if query_id not in predictions.keys():
-                        print('Unanswered question: {}\n'.format(query_id))
                         skip_count += 1
                         continue
 
                     prediction = str(predictions[query_id])
                     f1 += self.calc_f1_score(answers, prediction)
                     em += self.calc_em_score(answers, prediction)
-
+        print('total_count', total_count)
         f1_score = 100.0 * f1 / total_count
         em_score = 100.0 * em / total_count
         return f1_score, em_score, total_count, skip_count
@@ -255,5 +249,5 @@ class Metric:
         output_result['EM'] = '%.3f' % EM
         output_result['TOTAL'] = TOTAL
         output_result['SKIP'] = SKIP
-
+        print('output_result', output_result)
         return output_result

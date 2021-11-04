@@ -80,6 +80,7 @@ class BartQAModel(pl.LightningModule):
             n_best_size=20,
             max_answer_length=512,
         )
+        print(len(predictions))
 
         input_data_file = os.path.join(self.input_dir, "{}.json".format("val"))
 
@@ -89,11 +90,16 @@ class BartQAModel(pl.LightningModule):
 
         self.log("f1", float(result['F1']), prog_bar=True)
 
-    def test_step(self, batch):
+    def test_step(self, batch, batch_idx):
         input_ids, input_mask, start_positions, end_positions, example_indices = batch
 
         outputs = self((input_ids, input_mask, None, None))
-        return outputs
+
+        return {
+            "start_logits": outputs["start_logits"],
+            "end_logits": outputs["end_logits"],
+            "example_indices": example_indices
+        }
 
     def test_epoch_end(self, outputs) -> None:
         all_results = []
@@ -108,10 +114,10 @@ class BartQAModel(pl.LightningModule):
             for i, example_index in enumerate(example_indices):
                 start_logits = batch_start_logits[i].detach().cpu().tolist()
                 end_logits = batch_end_logits[i].detach().cpu().tolist()
-                eval_example = self.trainer.datamodule.val_examples[
+                eval_example = self.trainer.datamodule.test_examples[
                     example_index.item()]
                 all_examples.append(eval_example)
-                eval_feature = self.trainer.datamodule.val_features[
+                eval_feature = self.trainer.datamodule.test_features[
                     example_index.item()]
                 all_features.append(eval_feature)
                 unique_id = int(eval_feature['unique_id'])
@@ -133,7 +139,7 @@ class BartQAModel(pl.LightningModule):
         print("**************Test**********************")
         print("f1 score", result['F1'])
         print("EM", result["EM"])
-        values = {'F1': result['F1'], 'EM': result["EM"], 'TOTAL': result['TOTAL'], 'SKIP': result["SKIP"] }
+        values = {'F1': float(result['F1']), 'EM': float(result["EM"]), 'TOTAL': int(result['TOTAL']), 'SKIP': int(result["SKIP"]) }
         self.log_dict(values)
 
     def configure_optimizers(self):

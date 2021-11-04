@@ -42,7 +42,7 @@ class DataModule(pl.LightningDataModule):
         return DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.eval_batch_size)
+        return DataLoader(self.val_dataset, batch_size=self.eval_batch_size, shuffle=True)
 
     def test_dataloader(self):
         return DataLoader(self.test_dataset, batch_size=self.eval_batch_size)

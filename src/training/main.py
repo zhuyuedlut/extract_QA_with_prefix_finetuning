@@ -39,6 +39,7 @@ if __name__ == '__main__':
     parser.add_argument("--eval_batch_size", default=128, type=int, help="Batch size for test and val")
     parser.add_argument("--learning_rate", default=5e-5, help="The initial learning rate for Adam")
     parser.add_argument("--pre_len", default=200, type=int, help="The prefix embedding length")
+    parser.add_argument("--prefix_dropout", default=0.3, type=float, help="The dropout rate for prefix")
     parser.add_argument("--max_question_length", default=64, type=int, help="The question token max length")
     parser.add_argument("--doc_stride", default=128, type=int, help="The stride of slide window for generate the "
                                                                     "context token")
