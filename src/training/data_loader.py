@@ -42,7 +42,7 @@ class DataModule(pl.LightningDataModule):
         return DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.eval_batch_size, shuffle=True)
+        return DataLoader(self.val_dataset, batch_size=self.eval_batch_size)
 
     def test_dataloader(self):
         return DataLoader(self.test_dataset, batch_size=self.eval_batch_size)
@@ -127,7 +127,6 @@ class DataModule(pl.LightningDataModule):
 
                 if len(query_tokens) > self.max_question_length:
                     query_tokens = query_tokens[0:self.max_question_length]
-
 
                 # context可以使用的最大的长度
                 max_tokens_for_context = self.config.max_position_embeddings - len(query_tokens) - 3
@@ -225,6 +224,8 @@ class DataModule(pl.LightningDataModule):
                     unique_id += 1
 
             torch.save(features, cache_features_file)
+
+        print('features num', len(features))
 
         all_input_ids = torch.tensor([f['input_ids'] for f in features], dtype=torch.long)
         all_input_mask = torch.tensor([f['input_mask'] for f in features], dtype=torch.long)

@@ -19,6 +19,11 @@ def generate_trainer(args: argparse.Namespace):
     )
     callbacks = [checkpoint_callback, early_stop_callback]
 
-    trainer = Trainer(gpus=1, callbacks=callbacks, log_every_n_steps=2, accumulate_grad_batches=2)
+    trainer = Trainer(
+        gpus=1,
+        num_sanity_val_steps=0,
+        callbacks=callbacks,
+        log_every_n_steps=2,
+    )
 
     return trainer

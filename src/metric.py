@@ -1,10 +1,13 @@
 import collections
-import json
 import math
+import re
+import json
 
 from tqdm import tqdm
 
 from transformers import BertTokenizer
+
+import nltk
 
 
 class Metric:
@@ -15,7 +18,8 @@ class Metric:
         self.tokenizer = BertTokenizer.from_pretrained(self.model_name_or_path)
 
     def get_best_indexes(self, logits, n_best_size):
-        index_and_score = sorted(enumerate(logits), key=lambda x: x[1], reverse=True)
+        index_and_score = sorted(enumerate(logits), key=lambda x: x[1],
+                                 reverse=True)
 
         best_indexes = []
         for i in range(len(index_and_score)):
@@ -46,7 +50,8 @@ class Metric:
             probs.append(score / total_sum)
         return probs
 
-    def generate_predictions(self, all_examples, all_features, all_results, n_best_size, max_answer_length):
+    def generate_predictions(self, all_examples, all_features, all_results,
+                             n_best_size, max_answer_length):
         example_index_to_feature = collections.defaultdict(list)
         for feature in all_features:
             example_index_to_feature[feature["example_index"]].append(feature)
@@ -55,8 +60,11 @@ class Metric:
         for result in all_results:
             unique_id_to_result[result.unique_id] = result
 
-        _PrelimPrediction = collections.namedtuple("PrelimPrediction", ["feature_index", "start_index",
-                                                                        "end_index", "start_logit", "end_logit"])
+        _PrelimPrediction = collections.namedtuple("PrelimPrediction",
+                                                   ["feature_index",
+                                                    "start_index",
+                                                    "end_index", "start_logit",
+                                                    "end_logit"])
         all_predictions = collections.OrderedDict()
         all_nbest_json = collections.OrderedDict()
 
@@ -66,8 +74,10 @@ class Metric:
 
             for (feature_index, feature) in enumerate(features):
                 result = unique_id_to_result[feature["unique_id"]]
-                start_indexes = self.get_best_indexes(result.start_logits, n_best_size)
-                end_indexes = self.get_best_indexes(result.end_logits, n_best_size)
+                start_indexes = self.get_best_indexes(result.start_logits,
+                                                      n_best_size)
+                end_indexes = self.get_best_indexes(result.end_logits,
+                                                    n_best_size)
 
                 for start_index in start_indexes:
                     for end_index in end_indexes:
@@ -79,7 +89,8 @@ class Metric:
                             continue
                         if end_index not in feature["token_to_orig_map"]:
                             continue
-                        if not feature["token_is_max_context"].get(start_index, False):
+                        if not feature["token_is_max_context"].get(start_index,
+                                                                   False):
                             continue
                         if end_index < start_index:
                             continue
@@ -99,8 +110,11 @@ class Metric:
                 key=lambda x: (x.start_logit + x.end_logit),
                 reverse=True)
 
-            _NbestPrediction = collections.namedtuple(  # pylint: disable=invalid-name
-                "NbestPrediction", ["text", "start_logit", "end_logit", "start_index", "end_index"])
+            _NbestPrediction = collections.namedtuple(
+                # pylint: disable=invalid-name
+                "NbestPrediction",
+                ["text", "start_logit", "end_logit", "start_index",
+                 "end_index"])
 
             seen_predictions = {}
             nbest = []
@@ -110,8 +124,10 @@ class Metric:
                     break
                 feature = features[pred.feature_index]
                 if pred.start_index > 0:  # this is a non-null prediction
-                    tok_tokens = feature["tokens"][pred.start_index:(pred.end_index + 1)]
-                    final_text = self.tokenizer.convert_tokens_to_string(tok_tokens)
+                    tok_tokens = feature["tokens"][
+                                 pred.start_index:(pred.end_index + 1)]
+                    final_text = self.tokenizer.convert_tokens_to_string(
+                        tok_tokens)
                     final_text = final_text.replace(' ', '')
                     if final_text in seen_predictions:
                         continue
@@ -131,7 +147,8 @@ class Metric:
 
             if not nbest:
                 nbest.append(
-                    _NbestPrediction(text="empty", start_logit=0.0, end_logit=0.0, start_index=0, end_index=0))
+                    _NbestPrediction(text="empty", start_logit=0.0,
+                                     end_logit=0.0, start_index=0, end_index=0))
 
             assert len(nbest) >= 1
 
@@ -166,7 +183,8 @@ class Metric:
     def remove_punctuation(self, in_str):
         in_str = str(in_str).lower().strip()
         sp_char = ['-', ':', '_', '*', '^', '/', '\\', '~', '`', '+', '=',
-                   '，', '。', '：', '？', '！', '“', '”', '；', '’', '《', '》', '……', '·', '、',
+                   '，', '。', '：', '？', '！', '“', '”', '；', '’', '《', '》', '……',
+                   '·', '、',
                    '「', '」', '（', '）', '－', '～', '『', '』']
         out_segs = []
         for char in in_str:
@@ -189,11 +207,39 @@ class Metric:
                         p = i + 1
         return s1[p - mmax:p], mmax
 
+    @staticmethod
+    def mixed_segmentation(in_str, rm_punc=True):
+        in_str = str(in_str).lower().strip()
+        segs_out = []
+        temp_str = ""
+        sp_char = ['-', ':', '_', '*', '^', '/', '\\', '~', '`', '+', '=',
+                   '，', '。', '：', '？', '！', '“', '”', '；', '’', '《', '》', '……',
+                   '·', '、',
+                   '「', '」', '（', '）', '－', '～', '『', '』']
+        for char in in_str:
+            if rm_punc and char in sp_char:
+                continue
+            if re.search(r'[\u4e00-\u9fa5]', char) or char in sp_char:
+                if temp_str != "":
+                    ss = nltk.word_tokenize(temp_str)
+                    segs_out.extend(ss)
+                    temp_str = ""
+                segs_out.append(char)
+            else:
+                temp_str += char
+
+        # handling last part
+        if temp_str != "":
+            ss = nltk.word_tokenize(temp_str)
+            segs_out.extend(ss)
+
+        return segs_out
+
     def calc_f1_score(self, answers, prediction):
         f1_scores = []
         for ans in answers:
-            ans_segs = self.tokenizer.tokenize(ans)
-            prediction_segs = self.tokenizer.tokenize(prediction)
+            ans_segs = self.mixed_segmentation(ans)
+            prediction_segs = self.mixed_segmentation(prediction)
             lcs, lcs_len = self.find_lcs(ans_segs, prediction_segs)
             if lcs_len == 0:
                 f1_scores.append(0)
@@ -209,6 +255,8 @@ class Metric:
         for ans in answers:
             ans_ = self.remove_punctuation(ans)
             prediction_ = self.remove_punctuation(prediction)
+            print('ans', ans_)
+            print('prediction', prediction_)
             if ans_ == prediction_:
                 em = 1
                 break
